@@ -15,6 +15,7 @@ module ActiveRecord
       # Establishes a connection to the database that's used by all Active Record objects
       def clickhouse_connection(config)
         config = config.symbolize_keys
+        scheme = config[:scheme] || 'http'
         host = config[:host]
         port = config[:port] || 8123
 
@@ -24,7 +25,7 @@ module ActiveRecord
           raise ArgumentError, 'No database specified. Missing argument: database.'
         end
 
-        ConnectionAdapters::ClickhouseAdapter.new(nil, logger, [host, port], { user: config[:username], password: config[:password], database: database }.compact)
+        ConnectionAdapters::ClickhouseAdapter.new(nil, logger, [scheme, host, port], { user: config[:username], password: config[:password], database: database }.compact)
       end
     end
   end
@@ -172,7 +173,20 @@ module ActiveRecord
       private
 
       def connect
-        @connection = Net::HTTP.start(@connection_parameters[0], @connection_parameters[1])
+        scheme, host, port = @connection_parameters
+        @connection = Faraday.new("#{scheme}://#{host}:#{port}")
+        @connection.basic_auth(@config[:user] || "default", @config[:password]) if @config[:user] || @config[:password]
+        ping!
+      end
+
+      def ping!
+        status = @connection.get("/").status
+
+        if status != 200
+          raise "Unexpected response status: #{status}"
+        end
+
+        true
       end
     end
   end

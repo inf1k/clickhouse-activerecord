@@ -1,16 +1,18 @@
 # frozen_string_literal: true
 
+require 'faraday'
+
 module ActiveRecord
   module ConnectionAdapters
     module Clickhouse
       module SchemaStatements
-        def execute(sql, name = nil)
-          do_execute(sql, name)
+        def execute(sql, name = nil, body = nil, query_format = 'JSONCompact')
+          do_execute(sql, name, body, query_format)
         end
 
         def exec_insert(sql, name, _binds, _pk = nil, _sequence_name = nil)
           new_sql = sql.dup.sub(/ (DEFAULT )?VALUES/, " VALUES")
-          do_execute(new_sql, name, format: nil)
+          do_execute(new_sql, name, nil, nil)
           true
         end
 
@@ -28,7 +30,7 @@ module ActiveRecord
         end
 
         def tables(name = nil)
-          result = do_system_execute('SHOW TABLES', name)
+          result = do_execute('SHOW TABLES', name)
           return [] if result.nil?
           result['data'].flatten
         end
@@ -42,36 +44,41 @@ module ActiveRecord
           tables
         end
 
-        def do_system_execute(sql, name = nil)
-          log_with_debug(sql, "#{adapter_name} #{name}") do
-            res = @connection.post("/?#{@config.to_param}", "#{sql} FORMAT JSONCompact")
-
-            process_response(res)
-          end
-        end
 
         private
 
-        def apply_format(sql, format)
-          format ? "#{sql} FORMAT #{format}" : sql
+
+        def path(query)
+          params = @config.select{|k, _v| k == :database}
+          params[:query] = query
+          params[:output_format_write_statistics] = 1
+
+          URI.encode_www_form(params)
         end
 
-        def do_execute(sql, name = nil, format: 'JSONCompact')
-          log(sql, "#{adapter_name} #{name}") do
-            formatted_sql = apply_format(sql, format)
-            res = @connection.post("/?#{@config.to_param}", formatted_sql)
+        def apply_format(sql, query_format)
+          query_format ? "#{sql} FORMAT #{query_format}" : sql
+        end
 
-            process_response(res)
+        def do_execute(sql, name = nil, body = nil, query_format = 'JSONCompact')
+          log(sql, "#{adapter_name} #{name}") do
+            formatted_sql = apply_format(sql, query_format) if query_format
+            response = @connection.post("/?#{path(formatted_sql)}", body)
+
+            process_response(response, query_format)
           end
         end
 
-        def process_response(res)
-          case res.code.to_i
-          when 200
-            res.body.presence && JSON.parse(res.body)
+        def process_response(response, format)
+          unless response.status == 200
+            raise ActiveRecord::ActiveRecordError, "Response code: #{response.status}:\n#{response.body}"
+          end
+
+          case format
+          when 'JSON', 'JSONCompact'
+            JSON.parse(response.body) if response.body.strip[0] == "{"
           else
-            raise ActiveRecord::ActiveRecordError,
-              "Response code: #{res.code}:\n#{res.body}"
+            response.body
           end
         end
 
@@ -97,7 +104,7 @@ module ActiveRecord
         protected
 
         def table_structure(table_name)
-          result = do_system_execute("DESCRIBE TABLE #{table_name}", table_name)
+          result = do_execute("DESCRIBE TABLE #{table_name}", table_name)
           data = result['data']
 
           return data unless data.empty?

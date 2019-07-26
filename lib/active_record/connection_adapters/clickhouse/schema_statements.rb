@@ -60,9 +60,10 @@ module ActiveRecord
           query_format ? "#{sql} FORMAT #{query_format}" : sql
         end
 
-        def do_execute(sql, name = nil, body = nil, query_format = 'JSONCompact')
+        def do_execute(sql, name = nil, body = "", query_format = 'JSONCompact')
           log(sql, "#{adapter_name} #{name}") do
-            formatted_sql = apply_format(sql, query_format) if query_format
+            formatted_sql = sql
+            formatted_sql = apply_format(formatted_sql, query_format) if query_format
             response = @connection.post("/?#{path(formatted_sql)}", body)
 
             process_response(response, query_format)
